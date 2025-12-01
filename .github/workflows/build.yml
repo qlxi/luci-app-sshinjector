@@ -33,20 +33,11 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           # Используем SDK для generic target - он наиболее универсален
-          # Для архитектуры aarch64_cortex-a53 есть несколько вариантов
-          # Выбираем самый распространенный или создаем общий вариант
-          
-          # Вариант 1: Для медиатек устройств (самый распространенный)
           SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/mediatek/filogic/openwrt-sdk-${{ env.SDK_VERSION }}-${{ env.ARCH }}_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
-          
-          # Если не сработает, можно попробовать другие:
-          # Для Rockchip: rockchip/armv8
-          # Для Qualcomm: qualcommax/armv8
           
           echo "Downloading SDK from: $SDK_URL"
           wget -q --show-progress "$SDK_URL" -O sdk.tar.xz || {
             echo "Trying alternative SDK URL..."
-            # Альтернатива: generic aarch64_generic
             SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/armsr/armv8/openwrt-sdk-${{ env.SDK_VERSION }}-aarch64_generic_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
             wget -q --show-progress "$SDK_URL" -O sdk.tar.xz
           }
@@ -82,7 +73,6 @@ jobs:
             time \
             zlib1g-dev
           
-          # Настраиваем ccache для максимальной производительности
           ccache --set-config=max_size=1G
           ccache --set-config=compression=true
           ccache --set-config=compression_level=1
@@ -91,15 +81,12 @@ jobs:
 
       - name: Prepare Package Structure
         run: |
-          # Создаем структуру пакета
           PACKAGE_DIR="sdk/package/luci-app-sshinjector"
           mkdir -p "$PACKAGE_DIR"
           
-          # Копируем необходимые файлы
           [ -f Makefile ] && cp Makefile "$PACKAGE_DIR/"
           [ -d files ] && cp -r files "$PACKAGE_DIR/"
           
-          # Проверяем наличие src директории для скриптов
           if [ -d src ]; then
             mkdir -p "$PACKAGE_DIR/src"
             cp -r src/* "$PACKAGE_DIR/src/"
@@ -109,12 +96,10 @@ jobs:
         env:
           CCACHE_DIR: /home/runner/.ccache
           CCACHE_MAXSIZE: 1G
-          # Используем все ядра для максимальной скорости
           MAKE_JOBS: $(( $(nproc) * 2 ))
         run: |
           cd sdk
           
-          # Экспортируем переменные для ускорения сборки
           export FORCE_UNSAFE_CONFIGURE=1
           export DEBIAN_FRONTEND=noninteractive
           
@@ -125,7 +110,6 @@ jobs:
           echo "CCache Stats:"
           ccache -s
           
-          # Минимальное обновление feeds для ускорения
           echo "Updating feeds (minimal)..."
           [ ! -f .feeds_configured ] && {
             ./scripts/feeds update -a
@@ -133,28 +117,22 @@ jobs:
             touch .feeds_configured
           }
           
-          # Создаем минимальный конфиг
-          cat > .config << 'EOF'
-CONFIG_TARGET_${{ env.ARCH }}=y
-CONFIG_TARGET_${{ env.ARCH }}_DEFAULT=y
+          # Используем отдельный файл для конфигурации
+          cat > .config << 'CONFIG_EOF'
+CONFIG_TARGET_aarch64_cortex-a53=y
+CONFIG_TARGET_aarch64_cortex-a53_DEFAULT=y
 CONFIG_PACKAGE_luci-app-sshinjector=y
 CONFIG_PACKAGE_luci-compat=y
 CONFIG_PACKAGE_luci-lib-ipkg=y
 CONFIG_PACKAGE_python3=y
 CONFIG_PACKAGE_python3-light=y
-# Минимальные зависимости для LuCI
 CONFIG_LUCI_LANG_en=y
 CONFIG_LUCI_LANG_ru=y
-EOF
-          
-          # Заменяем переменную ARCH в конфиге
-          sed -i "s/\${{ env.ARCH }}/${{ env.ARCH }}/g" .config
-          
-          # Ускоряем сборку
-          echo "CONFIG_CCACHE=y" >> .config
-          echo "CONFIG_BUILD_LOG=y" >> .config
-          echo "CONFIG_SDK=y" >> .config
-          echo "CONFIG_STRIP_ARGS=\"--strip-all\"" >> .config
+CONFIG_CCACHE=y
+CONFIG_BUILD_LOG=y
+CONFIG_SDK=y
+CONFIG_STRIP_ARGS="--strip-all"
+CONFIG_EOF
           
           echo "=== Config File ==="
           grep -E "CONFIG_(TARGET|PACKAGE|LUCI)" .config || true
@@ -170,7 +148,6 @@ EOF
           time make defconfig 2>&1 | tail -20
           
           echo "Compiling package only..."
-          # Собираем только наш пакет с максимальной оптимизацией
           time make package/luci-app-sshinjector/compile \
             V=s \
             -j$MAKE_JOBS \
@@ -180,7 +157,6 @@ EOF
             IGNORE_ERRORS=m \
             BUILD_LOG=1 2>&1 | tail -100
           
-          # Проверяем результат
           echo "=== Build Results ==="
           find bin -name "*.ipk" -type f 2>/dev/null | head -20 || true
           
@@ -198,31 +174,20 @@ EOF
       - name: Collect and Rename Artifacts
         run: |
           echo "Collecting artifacts..."
-          
-          # Создаем директорию для артефактов
           mkdir -p artifacts
           
-          # Находим все ipk файлы нашего пакета
           find sdk -name "*luci-app-sshinjector*.ipk" -type f 2>/dev/null | while read ipk; do
-            # Получаем базовое имя файла
             basename=$(basename "$ipk")
-            
-            # Универсальное имя: удаляем архитектурные специфики
-            # Оставляем только имя пакета и версию
             newname=$(echo "$basename" | sed -E 's/_aarch64_cortex-a53_/_all_/g' | sed -E 's/_aarch64_generic_/_all_/g')
-            
-            # Копируем с новым именем
             cp "$ipk" "artifacts/$newname"
             echo "📦 Created: artifacts/$newname"
           done
           
-          # Если не нашли, пробуем поискать по-другому
           if [ -z "$(ls -A artifacts/*.ipk 2>/dev/null)" ]; then
             echo "Trying alternative search..."
             find sdk -name "*.ipk" -type f -exec cp {} artifacts/ \;
           fi
           
-          # Выводим список
           echo "=== Final Artifacts ==="
           ls -la artifacts/*.ipk 2>/dev/null || echo "No IPK files found"
 
@@ -233,14 +198,6 @@ EOF
           path: artifacts/*.ipk
           retention-days: 30
           if-no-files-found: error
-          
-      - name: Upload SDK Cache
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sdk-cache-backup
-          path: sdk/
-          retention-days: 7
 
       - name: Show Build Summary
         if: always()
@@ -249,7 +206,6 @@ EOF
           echo "SDK Version: ${{ env.SDK_VERSION }}"
           echo "Architecture: ${{ env.ARCH }}"
           echo "Build Time: $(date)"
-          echo "CCache Stats:"
           ccache -s 2>/dev/null || echo "CCache not available"
           
           echo "Artifacts:"
