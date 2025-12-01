@@ -14,8 +14,8 @@ jobs:
         # Можно добавить разные архитектуры, например: x86_64, aarch64_cortex-a53, mipsel_24kc
         # Так как это скриптовый пакет (all), архитектура не так важна для сборки, 
         # но важна для проверки зависимостей.
-        arch: [x86_64]
-        sdk_ver: ['22.03.5'] # Версия OpenWrt SDK
+        arch: [aarch64_cortex-a53]
+        sdk_ver: ['24.10.4'] # Версия OpenWrt SDK
 
     steps:
       - name: Checkout
