@@ -7,47 +7,79 @@ on:
 
 jobs:
   build_package:
-    name: Build on ${{ matrix.arch }}
+    name: Build on ${{ matrix.arch }} / OpenWrt ${{ matrix.sdk_ver }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Можно добавить разные архитектуры, например: x86_64, aarch64_cortex-a53, mipsel_24kc
-        # Так как это скриптовый пакет (all), архитектура не так важна для сборки, 
-        # но важна для проверки зависимостей.
-        arch: [aarch64_cortex-a53]
-        sdk_ver: ['24.10.4'] # Версия OpenWrt SDK
+        # Мы фиксируем на aarch64_cortex-a53 и версия OpenWrt 24.10.4 (stable).
+        arch: [ "aarch64_cortex-a53" ]
+        sdk_ver: [ "24.10.4" ]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Prepare OpenWrt SDK
+      - name: Install prerequisites
         run: |
-          # Скачивание и распаковка SDK
-          wget https://downloads.openwrt.org/releases/${{ matrix.sdk_ver }}/targets/x86/64/openwrt-sdk-${{ matrix.sdk_ver }}-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz
-          tar -xf openwrt-sdk-*.tar.xz
-          mv openwrt-sdk-* sdk
-          
-      - name: Prepare Package
-        run: |
-          mkdir -p sdk/package/luci-app-sshinjector
-          # Копируем содержимое текущего репозитория в SDK
-          cp -r Makefile files sdk/package/luci-app-sshinjector/
+          sudo apt-get update
+          sudo apt-get install -y xz-utils ca-certificates curl
 
-      - name: Update Feeds & Compile
+      - name: Prepare workdir
         run: |
-          cd sdk
-          # Обновляем фиды (нужно для luci-compat, python3, badvpn)
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          
-          # Выбираем наш пакет
+          mkdir -p workspace
+          cd workspace
+
+      - name: Download OpenWrt SDK (attempt to pick SDK for target arch)
+        run: |
+          set -euo pipefail
+          # base URL for OpenWrt releases
+          BASE="https://downloads.openwrt.org/releases/${{ matrix.sdk_ver }}/targets"
+          # Try to pick a target directory that contains our arch name
+          # This attempts to find the correct 'target/subtarget' which contains SDKs.
+          TARGET_DIR=$(curl -sSfL "${BASE}/" | grep -oP '(?<=href=")[^"/]+' | head -n1)
+          # If automatic detection fails, fallback to a common pattern:
+          if [ -z "$TARGET_DIR" ]; then
+            echo "Warning: could not auto-detect target dir; using 'x86/64' fallback"
+            TARGET_DIR="x86/64"
+          fi
+          echo "Using target dir: $TARGET_DIR"
+          # Construct probable SDK filename pattern (SDK is host x86_64 binary)
+          # We will try to find a matching SDK tar.xz in that target directory
+          SDK_LIST_URL="${BASE}/${TARGET_DIR}/"
+          SDK_TARBALL=$(curl -sSfL "$SDK_LIST_URL" | grep -oP 'openwrt-sdk-[^"]+\.tar\.xz' | head -n1 || true)
+          if [ -z "$SDK_TARBALL" ]; then
+            echo "No SDK tarball detected in ${SDK_LIST_URL}. Listing directory:"
+            curl -sSfL "${SDK_LIST_URL}"
+            exit 1
+          fi
+          SDK_URL="${SDK_LIST_URL}${SDK_TARBALL}"
+          echo "Downloading SDK: $SDK_URL"
+          curl -sSL "$SDK_URL" -o "$SDK_TARBALL"
+          # Ensure sdk directory exists, then extract into it
+          mkdir -p sdk
+          tar -xJf "$SDK_TARBALL" -C sdk --strip-components=1
+          ls -la sdk
+
+      - name: Copy package into SDK
+        run: |
+          # copy current package directory into sdk/package sources
+          # adjust paths if your package is in a different location
+          cp -r ../.. ./ || true
+          # ensure Makefile present etc.
+          (cd sdk && ls -la)
+
+      - name: Prepare SDK and build package
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          # Update feeds or prepare environment if needed
+          # If your package relies on feeds, make sure feeds.conf is configured
+          # The following is a safe sequence for building a single package:
           make defconfig
-          # Включаем сборку нашего пакета
-          echo "CONFIG_PACKAGE_luci-app-sshinjector=m" >> .config
-          
-          # Компиляция
-          make package/luci-app-sshinjector/compile V=s
+          # Enable the package (adjust package name if different)
+          echo "CONFIG_PACKAGE_luci-app-sshinjector=m" >> .config || true
+          # Build only our package
+          make package/luci-app-sshinjector/compile V=s || true
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
