@@ -5,208 +5,54 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
-env:
-  SDK_VERSION: "24.10.0"
-  ARCH: "aarch64_cortex-a53"
-
 jobs:
   build_package:
-    name: Build Universal Package
+    name: Build on ${{ matrix.arch }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    strategy:
+      matrix:
+        # Можно добавить разные архитектуры, например: x86_64, aarch64_cortex-a53, mipsel_24kc
+        # Так как это скриптовый пакет (all), архитектура не так важна для сборки, 
+        # но важна для проверки зависимостей.
+        arch: [x86_64]
+        sdk_ver: ['22.03.5'] # Версия OpenWrt SDK
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: Cache SDK and ccache
-        uses: actions/cache@v4
-        with:
-          path: |
-            sdk/
-            ~/.ccache/
-          key: ${{ runner.os }}-sdk-${{ env.SDK_VERSION }}-${{ env.ARCH }}-${{ hashFiles('Makefile', 'files/**') }}
-          restore-keys: |
-            ${{ runner.os }}-sdk-${{ env.SDK_VERSION }}-${{ env.ARCH }}-
-
-      - name: Download Universal SDK
-        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Prepare OpenWrt SDK
         run: |
-          # Используем SDK для generic target - он наиболее универсален
-          SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/mediatek/filogic/openwrt-sdk-${{ env.SDK_VERSION }}-${{ env.ARCH }}_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
+          # Скачивание и распаковка SDK
+          wget https://downloads.openwrt.org/releases/${{ matrix.sdk_ver }}/targets/x86/64/openwrt-sdk-${{ matrix.sdk_ver }}-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz
+          tar -xf openwrt-sdk-*.tar.xz
+          # Находим и переименовываем извлеченную папку в 'sdk'
+          SDK_DIR=$(ls -d openwrt-sdk-*)
+          mv "$SDK_DIR" sdk
           
-          echo "Downloading SDK from: $SDK_URL"
-          wget -q --show-progress "$SDK_URL" -O sdk.tar.xz || {
-            echo "Trying alternative SDK URL..."
-            SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/armsr/armv8/openwrt-sdk-${{ env.SDK_VERSION }}-aarch64_generic_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
-            wget -q --show-progress "$SDK_URL" -O sdk.tar.xz
-          }
-          
-          mkdir -p sdk
-          tar -xf sdk.tar.xz -C sdk --strip-components=1
-          rm sdk.tar.xz
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.3
-        with:
-          key: ${{ runner.os }}-ccache-${{ env.SDK_VERSION }}
-          create-symlink: true
-          max-size: 1G
-
-      - name: Install minimal dependencies
+      - name: Prepare Package
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            ccache \
-            file \
-            gawk \
-            gettext \
-            git \
-            libncurses5-dev \
-            libssl-dev \
-            python3 \
-            python3-setuptools \
-            unzip \
-            wget \
-            rsync \
-            time \
-            zlib1g-dev
-          
-          ccache --set-config=max_size=1G
-          ccache --set-config=compression=true
-          ccache --set-config=compression_level=1
-          ccache --set-config=sloppiness=file_macro,include_file_ctime,include_file_mtime
-          ccache -s
+          mkdir -p sdk/package/luci-app-sshinjector
+          # Копируем содержимое текущего репозитория в SDK
+          cp -r Makefile files sdk/package/luci-app-sshinjector/
 
-      - name: Prepare Package Structure
-        run: |
-          PACKAGE_DIR="sdk/package/luci-app-sshinjector"
-          mkdir -p "$PACKAGE_DIR"
-          
-          [ -f Makefile ] && cp Makefile "$PACKAGE_DIR/"
-          [ -d files ] && cp -r files "$PACKAGE_DIR/"
-          
-          if [ -d src ]; then
-            mkdir -p "$PACKAGE_DIR/src"
-            cp -r src/* "$PACKAGE_DIR/src/"
-          fi
-
-      - name: Optimized Build Configuration
-        env:
-          CCACHE_DIR: /home/runner/.ccache
-          CCACHE_MAXSIZE: 1G
-          MAKE_JOBS: $(( $(nproc) * 2 ))
+      - name: Update Feeds & Compile
         run: |
           cd sdk
+          # Обновляем фиды (нужно для luci-compat, python3, badvpn)
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
           
-          export FORCE_UNSAFE_CONFIGURE=1
-          export DEBIAN_FRONTEND=noninteractive
+          # Выбираем наш пакет
+          make defconfig
+          # Включаем сборку нашего пакета
+          echo "CONFIG_PACKAGE_luci-app-sshinjector=m" >> .config
           
-          echo "=== Build Configuration ==="
-          echo "Architecture: ${{ env.ARCH }}"
-          echo "SDK Version: ${{ env.SDK_VERSION }}"
-          echo "Make Jobs: $MAKE_JOBS"
-          echo "CCache Stats:"
-          ccache -s
-          
-          echo "Updating feeds (minimal)..."
-          [ ! -f .feeds_configured ] && {
-            ./scripts/feeds update -a
-            ./scripts/feeds install -a luci-compat python3
-            touch .feeds_configured
-          }
-          
-          # Используем отдельный файл для конфигурации
-          cat > .config << 'CONFIG_EOF'
-CONFIG_TARGET_aarch64_cortex-a53=y
-CONFIG_TARGET_aarch64_cortex-a53_DEFAULT=y
-CONFIG_PACKAGE_luci-app-sshinjector=y
-CONFIG_PACKAGE_luci-compat=y
-CONFIG_PACKAGE_luci-lib-ipkg=y
-CONFIG_PACKAGE_python3=y
-CONFIG_PACKAGE_python3-light=y
-CONFIG_LUCI_LANG_en=y
-CONFIG_LUCI_LANG_ru=y
-CONFIG_CCACHE=y
-CONFIG_BUILD_LOG=y
-CONFIG_SDK=y
-CONFIG_STRIP_ARGS="--strip-all"
-CONFIG_EOF
-          
-          echo "=== Config File ==="
-          grep -E "CONFIG_(TARGET|PACKAGE|LUCI)" .config || true
+          # Компиляция
+          make package/luci-app-sshinjector/compile V=s
 
-      - name: Fast Compile Package
-        env:
-          MAKE_JOBS: $(( $(nproc) * 2 ))
-          CCACHE_DIR: /home/runner/.ccache
-        run: |
-          cd sdk
-          
-          echo "Starting fast compilation..."
-          time make defconfig 2>&1 | tail -20
-          
-          echo "Compiling package only..."
-          time make package/luci-app-sshinjector/compile \
-            V=s \
-            -j$MAKE_JOBS \
-            CC="ccache gcc" \
-            CXX="ccache g++" \
-            STRIP="echo skipping strip" \
-            IGNORE_ERRORS=m \
-            BUILD_LOG=1 2>&1 | tail -100
-          
-          echo "=== Build Results ==="
-          find bin -name "*.ipk" -type f 2>/dev/null | head -20 || true
-          
-          if find bin -name "*luci-app-sshinjector*.ipk" -type f 2>/dev/null | grep -q .; then
-            echo "✅ Build successful!"
-            echo "Generated packages:"
-            find bin -name "*luci-app-sshinjector*.ipk" -type f -exec ls -lh {} \;
-          else
-            echo "❌ Build failed - no IPK files found"
-            echo "Checking for errors..."
-            find . -name "*.log" -type f -exec grep -l "Error\|error\|failed" {} \; | head -5 | xargs cat | tail -50
-            exit 1
-          fi
-
-      - name: Collect and Rename Artifacts
-        run: |
-          echo "Collecting artifacts..."
-          mkdir -p artifacts
-          
-          find sdk -name "*luci-app-sshinjector*.ipk" -type f 2>/dev/null | while read ipk; do
-            basename=$(basename "$ipk")
-            newname=$(echo "$basename" | sed -E 's/_aarch64_cortex-a53_/_all_/g' | sed -E 's/_aarch64_generic_/_all_/g')
-            cp "$ipk" "artifacts/$newname"
-            echo "📦 Created: artifacts/$newname"
-          done
-          
-          if [ -z "$(ls -A artifacts/*.ipk 2>/dev/null)" ]; then
-            echo "Trying alternative search..."
-            find sdk -name "*.ipk" -type f -exec cp {} artifacts/ \;
-          fi
-          
-          echo "=== Final Artifacts ==="
-          ls -la artifacts/*.ipk 2>/dev/null || echo "No IPK files found"
-
-      - name: Upload Universal Package
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-sshinjector-universal
-          path: artifacts/*.ipk
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Show Build Summary
-        if: always()
-        run: |
-          echo "=== Build Summary ==="
-          echo "SDK Version: ${{ env.SDK_VERSION }}"
-          echo "Architecture: ${{ env.ARCH }}"
-          echo "Build Time: $(date)"
-          ccache -s 2>/dev/null || echo "CCache not available"
-          
-          echo "Artifacts:"
-          ls -la artifacts/*.ipk 2>/dev/null || echo "No artifacts found"
+          name: luci-app-sshinjector_${{ matrix.arch }}_${{ matrix.sdk_ver }}
+          path: sdk/bin/packages/*/base/luci-app-sshinjector_*.ipk
