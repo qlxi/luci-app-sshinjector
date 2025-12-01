@@ -24,10 +24,11 @@ jobs:
       - name: Prepare OpenWrt SDK
         run: |
           # Скачивание и распаковка SDK
-          wget https://downloads.openwrt.org/releases/${{ matrix.sdk_ver }}/targets/x86/64/openwrt-sdk-${{ matrix.sdk_ver }}-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz
-          tar -xf openwrt-sdk-*.tar.xz
-          # Находим и переименовываем извлеченную папку в 'sdk'
-          SDK_DIR=$(ls -d openwrt-sdk-*)
+          SDK_TARBALL="openwrt-sdk-${{ matrix.sdk_ver }}-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
+          wget https://downloads.openwrt.org/releases/${{ matrix.sdk_ver }}/targets/x86/64/$SDK_TARBALL
+          tar -xf $SDK_TARBALL
+          # Имя извлеченной директории равно имени тарбола без расширения .tar.xz
+          SDK_DIR="${SDK_TARBALL%.tar.xz}"
           mv "$SDK_DIR" sdk
           
       - name: Prepare Package
