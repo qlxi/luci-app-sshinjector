@@ -1,0 +1,56 @@
+name: Build OpenWrt Package
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build_package:
+    name: Build on ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Можно добавить разные архитектуры, например: x86_64, aarch64_cortex-a53, mipsel_24kc
+        # Так как это скриптовый пакет (all), архитектура не так важна для сборки, 
+        # но важна для проверки зависимостей.
+        arch: [x86_64]
+        sdk_ver: ['22.03.5'] # Версия OpenWrt SDK
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Prepare OpenWrt SDK
+        run: |
+          # Скачивание и распаковка SDK
+          wget https://downloads.openwrt.org/releases/${{ matrix.sdk_ver }}/targets/x86/64/openwrt-sdk-${{ matrix.sdk_ver }}-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz
+          tar -xf openwrt-sdk-*.tar.xz
+          mv openwrt-sdk-* sdk
+          
+      - name: Prepare Package
+        run: |
+          mkdir -p sdk/package/luci-app-sshinjector
+          # Копируем содержимое текущего репозитория в SDK
+          cp -r Makefile files sdk/package/luci-app-sshinjector/
+
+      - name: Update Feeds & Compile
+        run: |
+          cd sdk
+          # Обновляем фиды (нужно для luci-compat, python3, badvpn)
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          # Выбираем наш пакет
+          make defconfig
+          # Включаем сборку нашего пакета
+          echo "CONFIG_PACKAGE_luci-app-sshinjector=m" >> .config
+          
+          # Компиляция
+          make package/luci-app-sshinjector/compile V=s
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-sshinjector_${{ matrix.arch }}_${{ matrix.sdk_ver }}
+          path: sdk/bin/packages/*/base/luci-app-sshinjector_*.ipk
