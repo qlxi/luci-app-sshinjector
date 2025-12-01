@@ -1,0 +1,7 @@
+config sshinjector 'general'
+	option enabled '0'
+	option local_port '1080'
+	option remote_port '22'
+	option vpn_mode '0'
+	option tun_dev 'tun0'
+	option tun_net '10.255.0.2'
